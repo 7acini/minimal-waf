@@ -1,0 +1,45 @@
+name: minimal-waf-lab
+
+services:
+  edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - edge
+    depends_on:
+      - waf
+    security_opt:
+      - no-new-privileges:true
+
+  waf:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    volumes:
+      - ./waf.json:/etc/minimal-waf/config.json:ro
+    networks:
+      - edge
+      - backend
+    depends_on:
+      - php
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  php:
+    build:
+      context: ./php
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge:
+  backend:
+    internal: true
