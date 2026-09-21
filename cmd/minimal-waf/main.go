@@ -65,18 +65,27 @@ func run() int {
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	serveDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
-		<-shutdownSignal.Done()
-		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
-		defer cancel()
-		if err := server.Shutdown(shutdownContext); err != nil {
-			logger.Error("graceful shutdown failed", "error", err)
+		defer close(shutdownDone)
+		select {
+		case <-shutdownSignal.Done():
+			shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
+			defer cancel()
+			if err := server.Shutdown(shutdownContext); err != nil {
+				logger.Error("graceful shutdown failed", "error", err)
+			}
+		case <-serveDone:
 		}
 	}()
 
 	logger.Info("minimal-waf started", "version", version, "listen_address", cfg.Server.ListenAddress, "mode", cfg.WAF.Mode)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("server stopped unexpectedly", "error", err)
+	serveErr := server.ListenAndServe()
+	close(serveDone)
+	<-shutdownDone
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		logger.Error("server stopped unexpectedly", "error", serveErr)
 		return 1
 	}
 	logger.Info("minimal-waf stopped")
