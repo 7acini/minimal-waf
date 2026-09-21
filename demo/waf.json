@@ -22,6 +22,11 @@
     "exclusions": []
   },
   "logging": {
-    "level": "info"
+    "level": "info",
+    "file_path": "/var/log/minimal-waf/waf.jsonl",
+    "max_size_mb": 10,
+    "max_backups": 5,
+    "max_age_days": 30,
+    "compress": true
   }
 }

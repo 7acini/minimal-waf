@@ -20,6 +20,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ./waf.json:/etc/minimal-waf/config.json:ro
+      - waf-logs:/var/log/minimal-waf
     networks:
       - edge
       - backend
@@ -43,3 +44,6 @@ networks:
   edge:
   backend:
     internal: true
+
+volumes:
+  waf-logs:
