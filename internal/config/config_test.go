@@ -46,3 +46,42 @@ func TestRejectsUnknownField(t *testing.T) {
 		t.Fatal("expected an error for unknown field")
 	}
 }
+
+func TestLoggingDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Logging.FilePath != "" || cfg.Logging.MaxSizeMB != 10 || cfg.Logging.MaxBackups != 5 || cfg.Logging.MaxAgeDays != 30 || !cfg.Logging.Compress {
+		t.Fatalf("unexpected logging defaults: %#v", cfg.Logging)
+	}
+}
+
+func TestLoggingFileConfig(t *testing.T) {
+	cfg := Default()
+	cfg.Logging.FilePath = filepath.Join(t.TempDir(), "waf.jsonl")
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		modify func(*LoggingConfig)
+	}{
+		{"relative path", func(c *LoggingConfig) { c.FilePath = "waf.jsonl" }},
+		{"zero size", func(c *LoggingConfig) { c.MaxSizeMB = 0 }},
+		{"excessive size", func(c *LoggingConfig) { c.MaxSizeMB = 1025 }},
+		{"negative backups", func(c *LoggingConfig) { c.MaxBackups = -1 }},
+		{"negative age", func(c *LoggingConfig) { c.MaxAgeDays = -1 }},
+		{"unbounded backups", func(c *LoggingConfig) { c.MaxBackups, c.MaxAgeDays = 0, 0 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := cfg
+			test.modify(&invalid.Logging)
+			if err := invalid.Validate(); err == nil {
+				t.Fatal("expected invalid logging configuration to fail")
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package waf
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -169,6 +170,35 @@ func TestInternalHealthAndMetrics(t *testing.T) {
 			t.Errorf("%s status=%d, want 200", path, response.Code)
 		}
 	}
+}
+
+func TestUpstreamErrorLogOmitsSensitiveDetails(t *testing.T) {
+	cfg := config.Default()
+	cfg.Upstream.URL = "http://backend.invalid"
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	handler, err := NewHandler(cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.proxy.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("secret-token=private-value")
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://waf/?safe=1", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502", response.Code)
+	}
+	if strings.Contains(output.String(), "secret-token") || strings.Contains(output.String(), "private-value") {
+		t.Fatalf("sensitive transport error leaked into logs: %s", output.String())
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }
 
 func testHandler(t *testing.T, mode string, upstream http.HandlerFunc) *Handler {

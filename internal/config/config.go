@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -73,7 +74,12 @@ type Exclusion struct {
 }
 
 type LoggingConfig struct {
-	Level string `json:"level"`
+	Level      string `json:"level"`
+	FilePath   string `json:"file_path"`
+	MaxSizeMB  int    `json:"max_size_mb"`
+	MaxBackups int    `json:"max_backups"`
+	MaxAgeDays int    `json:"max_age_days"`
+	Compress   bool   `json:"compress"`
 }
 
 func Default() Config {
@@ -95,7 +101,13 @@ func Default() Config {
 			InspectMethods:    []string{"POST", "PUT", "PATCH"},
 			EnabledCategories: []string{"lfi", "sqli", "xss"},
 		},
-		Logging: LoggingConfig{Level: "info"},
+		Logging: LoggingConfig{
+			Level:      "info",
+			MaxSizeMB:  10,
+			MaxBackups: 5,
+			MaxAgeDays: 30,
+			Compress:   true,
+		},
 	}
 }
 
@@ -179,6 +191,21 @@ func (c Config) Validate() error {
 		if exclusion.PathPrefix == "" || exclusion.PathPrefix[0] != '/' {
 			return fmt.Errorf("waf.exclusions[%d].path_prefix must begin with /", i)
 		}
+	}
+	if c.Logging.FilePath != "" && !filepath.IsAbs(c.Logging.FilePath) {
+		return errors.New("logging.file_path must be an absolute path")
+	}
+	if c.Logging.MaxSizeMB < 1 || c.Logging.MaxSizeMB > 1024 {
+		return errors.New("logging.max_size_mb must be between 1 and 1024")
+	}
+	if c.Logging.MaxBackups < 0 || c.Logging.MaxBackups > 1000 {
+		return errors.New("logging.max_backups must be between 0 and 1000")
+	}
+	if c.Logging.MaxAgeDays < 0 || c.Logging.MaxAgeDays > 3650 {
+		return errors.New("logging.max_age_days must be between 0 and 3650")
+	}
+	if c.Logging.FilePath != "" && c.Logging.MaxBackups == 0 && c.Logging.MaxAgeDays == 0 {
+		return errors.New("logging must limit backups by count or age")
 	}
 	return nil
 }

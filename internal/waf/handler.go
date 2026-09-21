@@ -85,7 +85,8 @@ func NewHandler(cfg config.Config, logger *slog.Logger) (*Handler, error) {
 	}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, proxyErr error) {
 		handler.proxyErrors.Add(1)
-		logger.Error("upstream request failed", "request_id", requestID(request), "error", proxyErr)
+		// Transport errors may contain the request URL, including query secrets.
+		logger.Error("upstream request failed", "request_id", requestID(request), "error_type", fmt.Sprintf("%T", proxyErr))
 		writeJSONError(writer, http.StatusBadGateway, "upstream unavailable", requestID(request))
 	}
 	return handler, nil
