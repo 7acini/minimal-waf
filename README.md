@@ -248,6 +248,10 @@ authorization headers, full bodies, or complete parameter values.
 
 ## Verify the boundary
 
+For a self-contained, intentionally vulnerable PHP target, run the
+[local container lab](demo/README.md). It keeps the WAF and Apache/PHP private
+and exposes only a loopback-bound Nginx listener.
+
 Use these requests only against an environment you control:
 
 ```bash
