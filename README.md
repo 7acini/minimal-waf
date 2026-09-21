@@ -2,188 +2,113 @@
 
 # minimal-waf
 
-### Ship fast. Keep your backend behind a security checkpoint you can actually read.
+### A small security gate for the apps you ship fast.
 
-A tiny, container-ready Web Application Firewall built in Go for legacy PHP,
-indie SaaS, and the new wave of AI-assisted applications.
+An open-source HTTP reverse proxy that inspects requests before they reach your
+backend. One Go binary, a readable rule set, and a rollout you control.
 
 [![CI](https://github.com/7acini/minimal-waf/actions/workflows/ci.yml/badge.svg)](https://github.com/7acini/minimal-waf/actions/workflows/ci.yml)
 [![Go 1.24+](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](go.mod)
-[![one Go dependency](https://img.shields.io/badge/dependencies-1%20Go%20module-2ea44f)](go.mod)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![One Go dependency](https://img.shields.io/badge/Go%20dependencies-1-2ea44f)](go.mod)
 
-**One binary · One config · Rotating JSON logs · No TLS ceremony**
+**Framework-agnostic · Container-ready · Monitor first, block when ready**
+
+[Try the local demo](#try-it-locally) ·
+[See how it works](#how-it-works) ·
+[Deploy it](#deploy) ·
+[Understand the limits](#security-boundaries)
 
 </div>
 
 ---
 
-Software can now go from idea to production in a weekend. The security boundary
-still deserves to be explicit.
+Shipping an app is faster than ever. Understanding what reaches it should be
+just as easy.
 
-`minimal-waf` sits between your public Apache or Nginx and your private
-application server. It normalizes and inspects hostile input before it reaches
-PHP, while keeping the deployment small enough for one person to understand,
-test, and operate.
+`minimal-waf` gives solo builders and small teams a focused checkpoint between
+the public edge and **any HTTP backend**—whether the app is written in Go,
+JavaScript, Python, PHP, or something else. It catches selected patterns of
+path traversal/LFI, SQL injection, and XSS; records what it sees; and can stop
+a detected request before your application handles it.
 
-It is not a security platform, an appliance, or a cloud subscription. It is a
-focused reverse proxy with a deliberately small attack surface.
+No hosted control plane. No TLS stack inside the WAF. No mystery rule language.
+Just a small component you can inspect, test, and replace.
 
-## Why minimal-waf?
+## Try it locally
 
-- **Built for small teams.** A readable codebase, a JSON config, and useful
-  defaults instead of a rule engine that needs its own operations team.
-- **Container-shaped by design.** Static binary, `scratch` image, non-root user,
-  read-only configuration, JSON logs, health checks, metrics, and graceful
-  shutdown.
-- **Friendly to existing stacks.** Keep Apache/PHP today and move the public
-  edge to Nginx later without changing the WAF contract.
-- **Safe rollout.** Observe real traffic in `monitor`, tune narrow exclusions,
-  then move to `block`.
-- **No dependency maze.** The Go runtime uses the standard library plus
-  [Lumberjack](https://github.com/natefinch/lumberjack) for rotating file logs.
-- **Honest security.** This is a defense-in-depth control, not a substitute for
-  fixing vulnerabilities in the application.
+The repository includes a deliberately vulnerable sample app so you can see
+both allowed and blocked traffic. The sample happens to use PHP; the WAF itself
+speaks HTTP and does not depend on the backend language.
 
-## The 30-second architecture
+```bash
+git clone https://github.com/7acini/minimal-waf.git
+cd minimal-waf
+docker compose -f demo/compose.yaml up --build -d
+bash demo/smoke.sh
+```
+
+Open **<http://127.0.0.1:8088>**. Only the demo's Nginx edge is published, and
+only on loopback. Try a normal search, then test a known attack pattern:
+
+```bash
+curl -i -G --data-urlencode 'file=../../../../etc/passwd' \
+  http://127.0.0.1:8088/
+```
+
+The request should get `403` and `X-Request-ID`; the private application should
+not receive it. The demo starts in `block` mode. See the
+[lab guide](demo/README.md) for SQLi/XSS examples, logs, and cleanup.
+
+> **Local lab only.** The sample application is intentionally vulnerable. Do
+> not publish it or attach it to a production network.
+
+## How it works
 
 ```text
-                         public edge                  private network
-
-  Internet  ─────▶  Apache or Nginx  ─────▶  minimal-waf  ─────▶  Apache/PHP
-                         TLS :443              HTTP :8081          HTTP :8080
+    Client       public edge              security gate          private app
+      │      ┌──────────────────┐     ┌─────────────────┐    ┌──────────────┐
+      └─────▶│ Apache / Nginx   ├────▶│   minimal-waf   ├───▶│ HTTP backend │
+             │ TLS termination  │     │ inspect + proxy │    │ any language │
+             └──────────────────┘     └─────────────────┘    └──────────────┘
 ```
 
-TLS stays at the public proxy. The WAF and the application backend can listen
-on loopback or a private container network. The backend must not be publicly
-reachable, otherwise clients can bypass the WAF entirely.
+Your edge proxy keeps TLS. The WAF accepts HTTP from that proxy, inspects the
+request, and forwards allowed traffic **with its original body**. The backend
+should listen only on loopback or a private network; a publicly reachable
+backend bypasses the WAF.
 
-The same topology works for any HTTP backend; PHP is the primary threat model
-and deployment target.
+The inspection surface includes URL paths, query names and values, URL-encoded
+forms, nested JSON, multipart text fields and filenames, and textual request
+bodies on configured methods (`POST`, `PUT`, and `PATCH` by default). It does
+**not** scan uploaded file contents as text.
 
-## What it catches
+Before matching signatures, the WAF applies bounded normalization for percent
+encoding (including repeated encoding), HTML entities, backslashes, null
+bytes, and case. Built-in rule IDs are stable and grouped by category:
 
-The built-in rules currently cover:
-
-| Category | Examples |
+| Category | Examples of patterns |
 |---|---|
-| LFI / path traversal | `../`, sensitive Unix and Windows paths, PHP stream wrappers |
-| SQL injection | UNION, boolean tautologies, time-based payloads, stacked destructive statements, metadata access |
-| Cross-site scripting | script tags, inline event handlers, JavaScript URIs, HTML data URIs, CSS expressions |
+| `lfi` | Traversal sequences, sensitive file paths, stream wrappers |
+| `sqli` | UNION queries, tautologies, time-based and stacked statements |
+| `xss` | Script tags, event handlers, JavaScript and HTML data URIs |
 
-Inspection applies to URL paths, query names and values, URL-encoded forms,
-nested JSON objects and arrays, multipart text fields and filenames, and textual
-`POST`, `PUT`, and `PATCH` bodies.
+These are **signatures**, not a proof that a request is safe. The complete
+patterns and descriptions live in [rules.go](internal/waf/rules.go).
 
-Normalization is bounded and handles percent encoding, repeated encoding, HTML
-entities, backslashes, null bytes, and letter case. Multipart file contents are
-never treated as text; only filenames and regular text fields are inspected.
+## Roll out without guessing
 
-## Quick start
-
-### Run as a Go binary
-
-Requirements: Go 1.24 or newer and an HTTP backend listening on a private or
-loopback address.
-
-```bash
-cp config.example.json config.json
-go test ./...
-make build
-./bin/minimal-waf -config ./config.json
-```
-
-The example listens on `127.0.0.1:8081`, proxies to
-`http://127.0.0.1:8080`, and starts in `monitor` mode.
-
-Validate a configuration without opening a listener:
-
-```bash
-./bin/minimal-waf -config ./config.json -check-config
-```
-
-### Run as a hardened container
-
-Build the tiny `scratch` image locally:
-
-```bash
-cp config.example.json config.json
-docker build --build-arg VERSION=dev -t minimal-waf:local .
-docker run --rm --name minimal-waf \
-  --network host \
-  --read-only \
-  --cap-drop ALL \
-  -v "$PWD/config.json:/etc/minimal-waf/config.json:ro" \
-  minimal-waf:local
-```
-
-The host-network example is intended for Linux hosts where the public proxy and
-private backend already use loopback. In a multi-container setup, attach the
-edge proxy, WAF, and backend to the same private network, set the WAF listener
-to `0.0.0.0:8081` inside that network, and publish only the edge proxy.
-
-## Start in monitor. Earn your way to block.
-
-The two modes intentionally have different failure behavior:
+Start with `monitor` on real traffic. Review detections, add narrow exclusions
+for known false positives, and move to `block` when the signal is useful.
 
 | Behavior | `monitor` | `block` |
-|---|---:|---:|
-| Log signature detections | yes | yes |
-| Forward a detected request | yes | no |
-| Oversized inspectable body | forward intact, skip inspection, log | reject with `413` |
-| Block response | n/a | configurable `4xx` plus request ID |
+|---|---|---|
+| Signature match | Log and forward | Log and reject before the backend |
+| Inspectable body above `max_body_bytes` | Forward intact; log skipped inspection | Reject with `413` |
+| Response to a blocked request | Not applicable | Configurable `4xx` and request ID |
 
-Start with `"mode": "monitor"`, observe legitimate production traffic, add
-only narrow and auditable exclusions, then switch to `block`. A blocked request
-never reaches the upstream application.
-
-## Configuration
-
-The complete starting point lives in
-[`config.example.json`](config.example.json).
-
-| Field | Purpose |
-|---|---|
-| `server.listen_address` | Gateway address; prefer loopback when Apache/Nginx runs on the host |
-| `server.*_timeout` | Explicit server and shutdown timeouts |
-| `upstream.url` | Absolute URL of the private application backend |
-| `upstream.preserve_host` | Preserve the original Host for backend virtual hosts |
-| `upstream.trust_forwarded_headers` | Trust the incoming proxy chain only on a restricted listener |
-| `waf.mode` | `monitor` or `block` |
-| `waf.max_body_bytes` | Maximum body buffered and inspected per request |
-| `waf.max_decode_passes` | Bounded repeated-decoding passes |
-| `waf.block_status` | Configurable `4xx` response in block mode |
-| `waf.inspect_methods` | HTTP methods whose bodies are inspected |
-| `waf.enabled_categories` | Any combination of `lfi`, `sqli`, and `xss` |
-| `waf.exclusions` | Granular exceptions by route, method, parameter, and category |
-| `logging.file_path` | Absolute path for optional JSONL file logging; empty keeps stdout only |
-| `logging.max_size_mb` | Rotate the active file when a write would exceed this size |
-| `logging.max_backups` / `max_age_days` | Retain backups by count and age |
-| `logging.compress` | Gzip rotated backups |
-
-Common settings can also be overridden at deployment time:
-
-```bash
-export MINIMAL_WAF_LISTEN_ADDRESS=127.0.0.1:8081
-export MINIMAL_WAF_UPSTREAM_URL=http://127.0.0.1:8080
-export MINIMAL_WAF_MODE=monitor
-export MINIMAL_WAF_MAX_BODY_BYTES=1048576
-```
-
-### Forwarded headers: choose a trust boundary
-
-If the WAF listener accepts traffic **only** from a trusted Apache or Nginx,
-`trust_forwarded_headers` may be enabled to preserve the proxy chain. Restrict
-that listener with loopback, a private network, or firewall rules.
-
-If clients can reach the WAF directly, disable it. The WAF then removes
-client-supplied `Forwarded` and `X-Forwarded-*` headers before generating trusted
-proxy values. Never trust an internet-supplied `X-Forwarded-For` chain.
-
-### Keep exclusions surgical
-
-This example suppresses SQLi detection only for one parameter, method, route,
-and category:
+Exclusions can combine route prefix, method, parameter name, and detection
+category. Empty arrays match **any** value on that axis, so keep them narrow:
 
 ```json
 {
@@ -194,135 +119,118 @@ and category:
 }
 ```
 
-Add it to `waf.exclusions`. An empty array means “any value” on that axis and
-therefore creates a broader security exception.
+## Run your own backend
 
-## Put it in front of your app
-
-### Apache today
-
-1. Bind the PHP backend to `127.0.0.1:8080` using
-   [`deploy/apache/backend-vhost.conf`](deploy/apache/backend-vhost.conf).
-2. Route the public TLS virtual host to the WAF using
-   [`deploy/apache/public-vhost.conf`](deploy/apache/public-vhost.conf).
-3. Validate before reloading:
+Go 1.24+ is required to build from source. Start an HTTP backend on a private
+address, then point `upstream.url` at it:
 
 ```bash
-sudo a2enmod proxy proxy_http headers ssl rewrite
-sudo apachectl configtest
-sudo systemctl reload apache2
+cp config.example.json config.json
+# Edit upstream.url and review the forwarded-header trust setting.
+go run ./cmd/minimal-waf -config ./config.json -check-config
+make build
+./bin/minimal-waf -config ./config.json
 ```
 
-### Nginx tomorrow
+The example configuration listens on `127.0.0.1:8081`, forwards to
+`http://127.0.0.1:8080`, and starts in `monitor`. Common deployment settings
+can also be supplied through `MINIMAL_WAF_LISTEN_ADDRESS`,
+`MINIMAL_WAF_UPSTREAM_URL`, `MINIMAL_WAF_MODE`, and
+`MINIMAL_WAF_MAX_BODY_BYTES`.
 
-Use [`deploy/nginx/minimal-waf.conf`](deploy/nginx/minimal-waf.conf) as the edge
-configuration. Nginx terminates TLS, the WAF inspects HTTP, and Apache/PHP stays
-private. Keep `client_max_body_size` aligned with your intended WAF limit so the
-edge behavior is predictable.
+### Configuration at a glance
 
-### systemd without containers
+The full starting point is [config.example.json](config.example.json).
 
-```bash
-sudo install -o root -g root -m 0755 bin/minimal-waf /usr/local/bin/minimal-waf
-sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin minimal-waf
-sudo install -d -o root -g minimal-waf -m 0750 /etc/minimal-waf
-sudo install -o root -g minimal-waf -m 0640 config.json /etc/minimal-waf/config.json
-sudo install -o root -g root -m 0644 deploy/systemd/minimal-waf.service /etc/systemd/system/minimal-waf.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now minimal-waf
-```
-
-The supplied unit includes systemd hardening and grants no Linux capabilities.
-
-## Operate it
-
-| Endpoint / signal | Behavior |
+| Setting | Purpose |
 |---|---|
-| `GET /_minimal-waf/healthz` | Lightweight JSON liveness response |
-| `GET /_minimal-waf/metrics` | Prometheus-compatible counters |
-| `SIGINT` / `SIGTERM` | Graceful shutdown within the configured timeout |
-| stdout | Structured JSON operational and detection logs |
-| `logging.file_path` | Optional rotating JSONL file alongside stdout |
+| `server.listen_address` | WAF listener; keep it restricted to your edge proxy |
+| `upstream.url` | Private HTTP(S) backend URL |
+| `upstream.preserve_host` | Preserve the original Host for backend virtual hosts |
+| `upstream.trust_forwarded_headers` | Preserve the edge proxy's forwarded chain only when that proxy is trusted |
+| `waf.mode` | `monitor` or `block` |
+| `waf.max_body_bytes` | Maximum buffered and inspected body size |
+| `waf.max_decode_passes` | Maximum repeated-decoding passes |
+| `waf.block_status` | Response status for signature blocks |
+| `waf.inspect_methods` / `enabled_categories` | Body methods and rule categories to inspect |
+| `waf.exclusions` | Auditable, granular exceptions |
+| `logging.file_path` | Optional rotating JSONL file in addition to stdout |
 
-Operational endpoints are handled by the WAF and are never proxied to the
-application. Do not expose `/_minimal-waf/` publicly; the Apache and Nginx
-examples deny that prefix at the edge.
+Server and shutdown timeouts are configurable; transport timeouts are explicit
+in the implementation. Invalid configuration fails before the listener starts.
 
-Detection logs contain request ID, mode, method, path, client IP, rule IDs,
-categories, locations, and parameter names. They do **not** include cookies,
-authorization headers, full bodies, or complete parameter values.
+### Forwarded headers are a trust decision
 
-### Persist and rotate JSON logs
+If **only** a trusted Apache or Nginx can reach the WAF, enable
+`trust_forwarded_headers` to preserve its forwarding chain. Restrict the WAF
+listener with loopback, a private network, or firewall rules. If clients can
+connect directly, disable it: client-supplied `Forwarded` and `X-Forwarded-*`
+are removed before trusted values are generated. Never silently trust an
+internet-supplied `X-Forwarded-For`.
 
-By default, the WAF writes JSON to stdout as before. To also write a file,
-configure an absolute path and bounded retention:
+## Deploy
 
-```json
-"logging": {
-  "level": "info",
-  "file_path": "/var/log/minimal-waf/waf.jsonl",
-  "max_size_mb": 10,
-  "max_backups": 5,
-  "max_age_days": 30,
-  "compress": true
-}
-```
+| Target | Starting point |
+|---|---|
+| Containers | [Dockerfile](Dockerfile) (`scratch`, static binary, non-root) and [local Compose lab](demo/compose.yaml) |
+| Apache edge | [Public reverse-proxy virtual host](deploy/apache/public-vhost.conf) |
+| Nginx edge | [Nginx reverse-proxy configuration](deploy/nginx/minimal-waf.conf) |
+| systemd | [Hardened service unit](deploy/systemd/minimal-waf.service) |
+| Apache/PHP backend | [Private backend example](deploy/apache/backend-vhost.conf) |
 
-The process checks file access at startup and creates new log files with mode
-`0600`. Existing log files must also be regular files with no group/other
-access; symlinks are rejected. The path must be writable by the service user.
-The supplied systemd
-unit creates `/var/log/minimal-waf` for this purpose even with
-`ProtectSystem=strict`; the container lab uses a persistent named volume.
-Lumberjack rotates **when size is exceeded**; `max_age_days` removes old backups
-but does not trigger daily rotation. Use one WAF process per log file, and
-monitor disk space. If file writes fail after startup, stdout continues and a
-payload-free diagnostic goes to stderr. Avoid external rename/truncate
-rotation on the same file.
+The Apache/PHP files are **examples**, not a requirement. The WAF does not
+terminate TLS and should not be the internet-facing component. In a
+multi-container deployment, publish only the edge proxy; keep WAF and backend
+ports on private networks.
 
-## Verify the boundary
+For a single Linux host, build the image with `docker build -t minimal-waf .`,
+mount your config read-only, and use host networking only if your edge proxy
+and backend already bind to loopback. The [demo Compose file](demo/compose.yaml)
+shows the private-network pattern.
 
-For a self-contained, intentionally vulnerable PHP target, run the
-[local container lab](demo/README.md). It keeps the WAF and Apache/PHP private
-and exposes only a loopback-bound Nginx listener.
+## Observe it
 
-Use these requests only against an environment you control:
+| Signal | Where |
+|---|---|
+| Detection and operational logs | JSON on stdout; optional rotating JSONL file |
+| Health | `GET /_minimal-waf/healthz` |
+| Counters | `GET /_minimal-waf/metrics` (Prometheus text format) |
+| Request correlation | `X-Request-ID` response header |
+| Shutdown | Graceful on `SIGINT` and `SIGTERM` |
 
-```bash
-curl --path-as-is -i \
-  'https://legacy.example.com/index.php?e=../../../../etc/passwd'
+Operational endpoints are handled by the WAF and **never** forwarded to your
+app. Deny `/_minimal-waf/` at the public edge, as the deployment examples do.
 
-curl -i -X POST 'https://legacy.example.com/index.php' \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'e=../../../../etc/hosts'
+Detection logs record rule IDs, categories, locations, parameter names, method,
+path, client IP, mode, and request ID—not full bodies, complete parameter
+values, cookies, or authorization headers. Avoid placing sensitive data in URL
+paths or parameter **names**, which are logged.
 
-curl -i -X POST 'https://legacy.example.com/api/search' \
-  -H 'Content-Type: application/json' \
-  --data '{"q":"<img src=x onerror=alert(1)>"}'
-```
-
-In `block` mode, each response should be a `4xx` with a request ID and the
-private backend should receive no corresponding request.
+Set `logging.file_path` to an absolute path to keep a local copy alongside
+stdout. [Lumberjack](https://github.com/natefinch/lumberjack) rotates when the
+active file reaches `logging.max_size_mb`; `max_backups` and `max_age_days`
+limit retained backups, and `compress` controls gzip compression. New files
+use mode `0600`; the supplied systemd unit and demo volume provide writable
+log directories. Use **one WAF process per log file**. `max_age_days` is
+retention, not a daily rotation schedule.
 
 ## Security boundaries
 
-`minimal-waf` intentionally does a small number of things well. Keep these
-limits visible:
+`minimal-waf` is defense in depth, not a guarantee that requests are harmless.
 
-- Signature detection can produce false positives and can be bypassed.
-- Uploaded file contents are not scanned; filenames and text fields are.
-- TLS termination belongs to Apache, Nginx, or another trusted edge proxy.
-- The project does not replace patching, authentication, authorization, rate
-  limiting, CSP, SAST/DAST, or application-specific validation.
-- A private backend is part of the security model, not an optional hardening
-  step.
+- Signature rules can miss attacks or flag legitimate administrative input.
+- File uploads are not scanned; only multipart text fields and filenames are.
+- It does not replace secure application code, patching, authentication,
+  authorization, rate limiting, or application-specific validation.
+- A private backend and a trusted edge proxy are part of the security model.
+- Start in `monitor`, measure false positives, and use exclusions sparingly.
 
-For exploitable bypasses or vulnerabilities, follow
-[`SECURITY.md`](SECURITY.md) and use GitHub's private vulnerability reporting.
+Found a vulnerability or bypass? Please use the private reporting process in
+[SECURITY.md](SECURITY.md), not a public issue with exploit details.
 
-## Build, test, contribute
+## Build with us
 
-The repository keeps the contributor loop intentionally short:
+Small, reviewable changes are welcome. Before opening a pull request:
 
 ```bash
 gofmt -w .
@@ -331,12 +239,12 @@ go test -race ./...
 CGO_ENABLED=0 go build -trimpath ./cmd/minimal-waf
 ```
 
-Rules should have stable IDs, RE2-compatible patterns, malicious regression
-cases, and similar benign cases. Prefer narrow changes, standard-library
-solutions, and commits in the form `type(scope): description`.
+New rules should have stable IDs, RE2-compatible patterns, malicious and
+benign regression cases, and encoded-payload tests. Keep commits focused and
+use `type(scope): description`.
 
-If you are building fast—alone, with a small team, or with AI—this project is
-meant to stay understandable enough that you can own the entire path from
-request to backend.
+If this project earns a place in your stack, [star it](https://github.com/7acini/minimal-waf),
+[share a use case](https://github.com/7acini/minimal-waf/issues), or help make
+the next rule safer. The goal is a WAF that stays small enough to understand.
 
-MIT licensed. Small enough to audit. Useful enough to keep in the path.
+MIT licensed. See [LICENSE](LICENSE).
