@@ -9,10 +9,10 @@ indie SaaS, and the new wave of AI-assisted applications.
 
 [![CI](https://github.com/7acini/minimal-waf/actions/workflows/ci.yml/badge.svg)](https://github.com/7acini/minimal-waf/actions/workflows/ci.yml)
 [![Go 1.24+](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](go.mod)
-[![stdlib only](https://img.shields.io/badge/dependencies-stdlib%20only-2ea44f)](go.mod)
+[![one Go dependency](https://img.shields.io/badge/dependencies-1%20Go%20module-2ea44f)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**One binary · One config · Zero runtime dependencies · No TLS ceremony**
+**One binary · One config · Rotating JSON logs · No TLS ceremony**
 
 </div>
 
@@ -40,7 +40,8 @@ focused reverse proxy with a deliberately small attack surface.
   edge to Nginx later without changing the WAF contract.
 - **Safe rollout.** Observe real traffic in `monitor`, tune narrow exclusions,
   then move to `block`.
-- **No dependency maze.** The Go runtime uses only the standard library.
+- **No dependency maze.** The Go runtime uses the standard library plus
+  [Lumberjack](https://github.com/natefinch/lumberjack) for rotating file logs.
 - **Honest security.** This is a defense-in-depth control, not a substitute for
   fixing vulnerabilities in the application.
 
@@ -155,6 +156,10 @@ The complete starting point lives in
 | `waf.inspect_methods` | HTTP methods whose bodies are inspected |
 | `waf.enabled_categories` | Any combination of `lfi`, `sqli`, and `xss` |
 | `waf.exclusions` | Granular exceptions by route, method, parameter, and category |
+| `logging.file_path` | Absolute path for optional JSONL file logging; empty keeps stdout only |
+| `logging.max_size_mb` | Rotate the active file when a write would exceed this size |
+| `logging.max_backups` / `max_age_days` | Retain backups by count and age |
+| `logging.compress` | Gzip rotated backups |
 
 Common settings can also be overridden at deployment time:
 
@@ -237,6 +242,7 @@ The supplied unit includes systemd hardening and grants no Linux capabilities.
 | `GET /_minimal-waf/metrics` | Prometheus-compatible counters |
 | `SIGINT` / `SIGTERM` | Graceful shutdown within the configured timeout |
 | stdout | Structured JSON operational and detection logs |
+| `logging.file_path` | Optional rotating JSONL file alongside stdout |
 
 Operational endpoints are handled by the WAF and are never proxied to the
 application. Do not expose `/_minimal-waf/` publicly; the Apache and Nginx
@@ -245,6 +251,34 @@ examples deny that prefix at the edge.
 Detection logs contain request ID, mode, method, path, client IP, rule IDs,
 categories, locations, and parameter names. They do **not** include cookies,
 authorization headers, full bodies, or complete parameter values.
+
+### Persist and rotate JSON logs
+
+By default, the WAF writes JSON to stdout as before. To also write a file,
+configure an absolute path and bounded retention:
+
+```json
+"logging": {
+  "level": "info",
+  "file_path": "/var/log/minimal-waf/waf.jsonl",
+  "max_size_mb": 10,
+  "max_backups": 5,
+  "max_age_days": 30,
+  "compress": true
+}
+```
+
+The process checks file access at startup and creates new log files with mode
+`0600`. Existing log files must also be regular files with no group/other
+access; symlinks are rejected. The path must be writable by the service user.
+The supplied systemd
+unit creates `/var/log/minimal-waf` for this purpose even with
+`ProtectSystem=strict`; the container lab uses a persistent named volume.
+Lumberjack rotates **when size is exceeded**; `max_age_days` removes old backups
+but does not trigger daily rotation. Use one WAF process per log file, and
+monitor disk space. If file writes fail after startup, stdout continues and a
+payload-free diagnostic goes to stderr. Avoid external rename/truncate
+rotation on the same file.
 
 ## Verify the boundary
 

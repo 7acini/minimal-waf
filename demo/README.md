@@ -56,6 +56,18 @@ Watch WAF detection logs without reading the vulnerable PHP response:
 docker compose -f demo/compose.yaml logs -f waf
 ```
 
+The same JSON events are written to `/var/log/minimal-waf/waf.jsonl` in the WAF
+container. The `waf-logs` Docker volume survives `docker compose down` and
+stores rotated backups. To copy the current file out for inspection:
+
+```bash
+docker compose -f demo/compose.yaml cp waf:/var/log/minimal-waf/waf.jsonl /tmp/minimal-waf-lab.jsonl
+```
+
+The file contains security metadata; restrict access to copies and backups.
+`docker compose down -v` removes the volume and its logs, so use that only when
+you explicitly intend to delete them.
+
 To observe rather than block, change `waf.mode` in `demo/waf.json` to
 `monitor` and recreate only the WAF container. In that mode the attack reaches
 the intentionally vulnerable application, so **do not open untrusted links or
