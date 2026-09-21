@@ -1,0 +1,2 @@
+Welcome to the minimal-waf local security lab.
+This file is the intended safe example for the LFI input.
