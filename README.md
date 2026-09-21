@@ -16,6 +16,7 @@ backend. One Go binary, a readable rule set, and a rollout you control.
 
 [Try the local demo](#try-it-locally) ·
 [See how it works](#how-it-works) ·
+[See measured load](#measured-loopback-load-test) ·
 [Deploy it](#deploy) ·
 [Understand the limits](#security-boundaries)
 
@@ -213,6 +214,46 @@ limit retained backups, and `compress` controls gzip compression. New files
 use mode `0600`; the supplied systemd unit and demo volume provide writable
 log directories. Use **one WAF process per log file**. `max_age_days` is
 retention, not a daily rotation schedule.
+
+## Measured loopback load test
+
+On 2026-09-21, the reproducible [stress runner](tools/stress/main.go) sent
+**2.5 million measured HTTP requests** through the real WAF handler and
+reverse proxy. The client, WAF, and a tiny HTTP backend all ran on loopback in
+one Go process on a Linux laptop (Intel Core i5-1135G7, 8 logical CPUs, Go
+1.24.13). Each scenario had 5,000 additional warmup requests. Detected
+requests used Lumberjack file logging (10 MiB rotation, five backups, gzip);
+stdout was discarded to avoid terminal speed affecting the measurements.
+
+| Scenario | Requests | Clients | Responses | Backend hits | Req/s | p50 | p95 | p99 |
+|---|---:|---:|---|---:|---:|---:|---:|---:|
+| Allowed GET | 500,000 | 64 | 500,000 × 200 | 500,000 | 42,724 | 1.29 ms | 3.11 ms | 4.17 ms |
+| Blocked LFI GET | 500,000 | 64 | 500,000 × 403 | **0** | 74,985 | 0.69 ms | 2.09 ms | 3.12 ms |
+| Monitored LFI GET | 500,000 | 64 | 500,000 × 200 | 500,000 | 35,100 | 1.58 ms | 3.86 ms | 5.44 ms |
+| Blocked LFI, saturation | 1,000,000 | 256 | 1,000,000 × 403 | **0** | 74,622 | 2.91 ms | 7.92 ms | 11.04 ms |
+
+All measured requests completed without client errors, unexpected HTTP
+statuses, or proxy errors. WAF counters recorded exactly 2,000,000 detections
+and 1,500,000 blocks across these independent runs. Five compressed log backups
+were retained per detection scenario, and all gzip files passed integrity
+checks. Raising concurrency from 64 to 256 did **not** raise blocked-request
+throughput on this machine; p99 latency increased instead.
+
+Reproduce the test on your own machine (local loopback only):
+
+```bash
+bench_dir="$(mktemp -d /tmp/minimal-waf-stress.XXXXXX)"
+go run ./tools/stress -scenario allowed -requests 500000 -concurrency 64 -warmup 5000 -log-file "$bench_dir/allowed.jsonl"
+go run ./tools/stress -scenario blocked -requests 500000 -concurrency 64 -warmup 5000 -log-file "$bench_dir/blocked.jsonl"
+go run ./tools/stress -scenario monitor -requests 500000 -concurrency 64 -warmup 5000 -log-file "$bench_dir/monitor.jsonl"
+go run ./tools/stress -scenario blocked -requests 1000000 -concurrency 256 -warmup 5000 -log-file "$bench_dir/blocked-c256.jsonl"
+```
+
+This measures the WAF's request path and a synthetic backend—not Nginx,
+Apache/PHP, TLS, the container runtime, or a real application's database.
+Client and server compete for the same CPU. These numbers are a repeatable
+reference point, **not** a production capacity or security guarantee. Run a
+separate end-to-end test on your deployment and hardware before sizing it.
 
 ## Security boundaries
 
